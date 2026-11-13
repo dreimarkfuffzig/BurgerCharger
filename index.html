@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>BurgerCharger</title>
+  <meta name="theme-color" content="#b3261e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="BurgerCharger">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="icon" type="image/png" href="icons/icon-180.png">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="map"></div>
+
+  <section id="sheet" aria-label="Planer">
+    <button id="handle" type="button" aria-label="Bereich ein- oder ausklappen"><span></span></button>
+    <div id="sheet-body">
+      <form id="route-form" autocomplete="off">
+        <div class="field">
+          <label for="start">Start</label>
+          <input id="start" type="search" placeholder="Ort oder Adresse" enterkeyhint="search">
+          <button id="locate" type="button" class="icon-btn" aria-label="Meinen Standort verwenden" title="Mein Standort">◎</button>
+          <ul class="suggest" id="start-suggest" hidden></ul>
+        </div>
+        <div class="field">
+          <label for="dest">Ziel</label>
+          <input id="dest" type="search" placeholder="Ort oder Adresse" enterkeyhint="search">
+          <button id="swap" type="button" class="icon-btn" aria-label="Start und Ziel tauschen" title="Tauschen">⇅</button>
+          <ul class="suggest" id="dest-suggest" hidden></ul>
+        </div>
+      </form>
+
+      <div id="chips" role="group" aria-label="Ketten"></div>
+
+      <div class="settings">
+        <label>Fußweg bis <output id="radius-out">200 m</output>
+          <input id="radius" type="range" min="50" max="500" step="50" value="200">
+        </label>
+        <label>Abseits der Route bis
+          <select id="corridor">
+            <option value="1">1 km</option>
+            <option value="2">2 km</option>
+            <option value="5" selected>5 km</option>
+            <option value="10">10 km</option>
+            <option value="25">25 km</option>
+          </select>
+        </label>
+      </div>
+
+      <p id="summary" aria-live="polite">Lade Daten …</p>
+      <ol id="results"></ol>
+      <p id="footer"></p>
+    </div>
+  </section>
+
+  <dialog id="chain-dialog">
+    <header>
+      <h2>Ketten auswählen</h2>
+      <button id="chain-close" type="button" class="primary">Fertig</button>
+    </header>
+    <input id="chain-search" type="search" placeholder="Kette suchen …">
+    <div id="chain-list"></div>
+  </dialog>
+
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
