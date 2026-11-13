@@ -161,3 +161,12 @@ dialog h2 { margin: 0; font-size: 18px; }
 #chain-list input { width: 20px; height: 20px; accent-color: var(--accent); }
 
 .maplibregl-ctrl-top-right { top: env(safe-area-inset-top); }
+
+/* ---------- Routenwahl ---------- */
+#routes { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 10px; }
+#routes[hidden] { display: none; }
+.chip.route { font-size: 14px; font-variant-numeric: tabular-nums; }
+.chip.route[aria-pressed="true"] { background: #1a73e8; border-color: #1a73e8; color: #fff; font-weight: 400; }
+.chip.via { font-size: 14px; border-style: dashed; background: none; }
+.r-hits.none { color: var(--muted); }
+#sheet.min #routes { display: none; }

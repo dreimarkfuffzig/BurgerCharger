@@ -27,8 +27,11 @@ const state = {
   corridor: 5,
   start: null,   // {lat, lon, label}
   dest: null,
-  route: null,   // {coords, cum, distance, duration}
-  routeInfo: new Map(), // siteId -> {off, along} in Metern
+  via: null,     // Supercharger, über den die Route gezwungen wird
+  routes: [],    // Alternativen: {geometry, coords, cum, distance, duration, info}
+  routeIdx: 0,
+  route: null,   // die gewählte Route; info: siteId -> {off, along} in Metern
+  routeCounts: [],
   userPos: null,
   openId: null,
   results: [],
@@ -113,12 +116,23 @@ async function setupLayers() {
   await mapReady;
   map.addSource('route', { type: 'geojson', data: emptyFC() });
   map.addSource('sites', { type: 'geojson', data: emptyFC() });
-  map.addLayer({ id: 'route-case', type: 'line', source: 'route',
-    layout: { 'line-cap': 'round', 'line-join': 'round' },
+  const round = { 'line-cap': 'round', 'line-join': 'round' };
+  const isActive = ['==', ['get', 'active'], true], isAlt = ['==', ['get', 'active'], false];
+  map.addLayer({ id: 'route-alt-case', type: 'line', source: 'route', filter: isAlt, layout: round,
+    paint: { 'line-color': '#ffffff', 'line-width': 7 } });
+  map.addLayer({ id: 'route-alt', type: 'line', source: 'route', filter: isAlt, layout: round,
+    paint: { 'line-color': '#8d99ae', 'line-width': 4 } });
+  // breite, unsichtbare Linie, damit sich Alternativen mit dem Finger treffen lassen
+  map.addLayer({ id: 'route-alt-tap', type: 'line', source: 'route', filter: isAlt, layout: round,
+    paint: { 'line-color': '#000000', 'line-width': 26, 'line-opacity': 0.01 } });
+  map.addLayer({ id: 'route-case', type: 'line', source: 'route', filter: isActive, layout: round,
     paint: { 'line-color': '#ffffff', 'line-width': 8 } });
-  map.addLayer({ id: 'route-line', type: 'line', source: 'route',
-    layout: { 'line-cap': 'round', 'line-join': 'round' },
+  map.addLayer({ id: 'route-line', type: 'line', source: 'route', filter: isActive, layout: round,
     paint: { 'line-color': '#1a73e8', 'line-width': 5 } });
+  map.on('click', 'route-alt-tap', (e) => {
+    if (map.queryRenderedFeatures(e.point, { layers: ['sites-hit', 'sites-other'] }).length) return;
+    selectRoute(e.features[0].properties.idx);
+  });
   map.addLayer({ id: 'sites-other', type: 'circle', source: 'sites',
     filter: ['!=', ['get', 'kind'], 'hit'],
     paint: {
@@ -149,13 +163,16 @@ function hitsFor(site) {
 }
 
 function compute() {
+  if (!state.data) return; // Daten noch nicht geladen
   const { sites } = state.data;
   const maxOff = state.corridor * 1000;
   const features = [];
   const results = [];
+  const counts = state.routes.map(() => 0);
   for (const s of sites) {
     const hits = hitsFor(s);
-    const info = state.route ? state.routeInfo.get(s.id) : null;
+    const info = state.route ? state.route.info.get(s.id) : null;
+    if (hits.length) state.routes.forEach((r, i) => { if (r.info.get(s.id).off <= maxOff) counts[i]++; });
     let kind = 'none';
     if (hits.length) kind = !state.route || info.off <= maxOff ? 'hit' : 'far';
     if (kind === 'hit') {
@@ -170,6 +187,7 @@ function compute() {
   else if (state.userPos) results.sort((a, b) => a.dist - b.dist);
   else results.sort((a, b) => a.site.name.localeCompare(b.site.name, 'de'));
   state.results = results;
+  state.routeCounts = counts;
   map.getSource('sites')?.setData({ type: 'FeatureCollection', features });
   renderResults();
 }
@@ -188,11 +206,58 @@ function renderResults() {
     summary.append(`${results.length} passende Supercharger`,
       el('small', {}, state.userPos ? 'Sortiert nach Entfernung zu dir.' : 'Gib Start und Ziel ein, um nur die Route zu sehen.'));
   }
-  const list = $('results');
-  list.replaceChildren(...results.slice(0, 150).map(renderItem));
+  renderRoutes();
+  const shown = results.slice(0, 150);
+  // Auf der Karte angetippter Charger, der nicht in der Liste steht: oben anheften
+  if (state.openId != null && !shown.some((r) => r.site.id === state.openId)) {
+    const site = state.data.sites.find((s) => s.id === state.openId);
+    if (site) shown.unshift({ site, hits: hitsFor(site), info: route ? route.info.get(site.id) : null, dist: null, pinned: true });
+  }
+  $('results').replaceChildren(...shown.map(renderItem));
 }
 
-function renderItem({ site, hits, info, dist }) {
+function renderRoutes() {
+  const out = [];
+  if (state.routes.length > 1) {
+    state.routes.forEach((r, i) => {
+      const b = el('button', { type: 'button', className: 'chip route' },
+        el('strong', {}, fmtDur(r.duration)), ` · ${fmtKm(r.distance)} · ${state.routeCounts[i]} Treffer`);
+      b.setAttribute('aria-pressed', i === state.routeIdx);
+      b.addEventListener('click', () => selectRoute(i));
+      out.push(b);
+    });
+  }
+  if (state.via) {
+    const b = el('button', { type: 'button', className: 'chip via' }, `über ${state.via.name} ✕`);
+    b.setAttribute('aria-label', `Zwischenstopp ${state.via.name} entfernen`);
+    b.addEventListener('click', () => setVia(null));
+    out.push(b);
+  }
+  $('routes').replaceChildren(...out);
+  $('routes').hidden = !out.length;
+}
+
+function drawRoutes() {
+  map.getSource('route')?.setData({ type: 'FeatureCollection',
+    features: state.routes.map((r, i) => ({ type: 'Feature', geometry: r.geometry,
+      properties: { idx: i, active: i === state.routeIdx } })) });
+}
+
+function selectRoute(i) {
+  if (!state.routes[i] || i === state.routeIdx) return;
+  state.routeIdx = i;
+  state.route = state.routes[i];
+  state.openId = null;
+  drawRoutes();
+  compute();
+}
+
+function setVia(site) {
+  state.via = site;
+  updateRoute();
+}
+
+function renderItem({ site, hits, info, dist, pinned }) {
   const li = el('li', { id: `site-${site.id}` });
   li.dataset.id = site.id;
   const lead = info ? `km ${Math.round(info.along / 1000)}` : dist != null ? fmtKm(dist) : site.cc;
@@ -205,8 +270,11 @@ function renderItem({ site, hits, info, dist }) {
   // Pro Kette nur den nächsten Treffer zeigen
   const nearest = new Map();
   for (const h of hits) if (!nearest.has(h.k)) nearest.set(h.k, h);
-  li.append(el('div', { className: 'r-hits' },
-    [...nearest.values()].map((h) => `${chainLabel(h.k, h.n)} ${h.d} m`).join(' · ')));
+  const offRoute = pinned && info && info.off > state.corridor * 1000;
+  const line = [...nearest.values()].map((h) => `${chainLabel(h.k, h.n)} ${h.d} m`).join(' · ')
+    || 'Keine gewählte Kette in Laufweite';
+  li.append(el('div', { className: nearest.size ? 'r-hits' : 'r-hits none' },
+    line + (offRoute ? ` · ${fmtKm(info.off)} abseits` : '')));
 
   if (site.id === state.openId) li.append(renderDetail(site, info));
   li.addEventListener('click', (e) => {
@@ -245,6 +313,14 @@ function renderDetail(site, info) {
     setTimeout(() => { copy.textContent = 'Name kopieren'; }, 1500);
   });
   actions.append(copy);
+  if (state.start && state.dest) {
+    const isVia = state.via?.id === site.id;
+    if (isVia || (info && info.off > 300)) {
+      const via = el('button', { type: 'button' }, isVia ? 'Zwischenstopp entfernen' : 'Route über diesen Charger');
+      via.addEventListener('click', () => setVia(isVia ? null : site));
+      actions.append(via);
+    }
+  }
   box.append(actions);
   return box;
 }
@@ -256,45 +332,62 @@ function openSite(id, { fly, scroll }) {
   compute();
   if (!site) return;
   $('sheet').classList.remove('min');
-  if (fly) map.flyTo({ center: [site.lon, site.lat], zoom: Math.max(map.getZoom(), 13), padding: mapPadding() });
+  if (fly) map.flyTo({ center: [site.lon, site.lat], zoom: Math.max(map.getZoom(), 13), offset: sheetOffset() });
   if (scroll) document.getElementById(`site-${id}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
 const mapPadding = () => ({ top: 60, left: 40, right: 40, bottom: $('sheet').offsetHeight + 30 });
+// Punkt in die Mitte des sichtbaren Kartenteils oberhalb des Panels rücken
+const sheetOffset = () => [0, -$('sheet').offsetHeight / 2];
 
 // ---------- Routing ----------
+function clearRoutes() {
+  state.routes = [];
+  state.routeIdx = 0;
+  state.route = null;
+  map.getSource('route')?.setData(emptyFC());
+}
+
+let routeSeq = 0;
 async function updateRoute() {
-  const { start, dest } = state;
+  if (!state.data) return; // init() holt das nach, sobald die Daten da sind
+  const { start, dest, via } = state;
+  const my = ++routeSeq;
   if (!start || !dest) {
-    state.route = null;
-    state.routeInfo.clear();
-    map.getSource('route')?.setData(emptyFC());
+    state.via = null;
+    clearRoutes();
     compute();
     return;
   }
   $('summary').classList.remove('error');
   $('summary').textContent = 'Berechne Route …';
   try {
-    const url = `${ROUTER}${start.lon},${start.lat};${dest.lon},${dest.lat}?overview=full&geometries=geojson`;
-    const res = await fetch(url);
+    const pts = [start, via, dest].filter(Boolean).map((p) => `${p.lon},${p.lat}`).join(';');
+    // Alternativen liefert der Dienst nur ohne Zwischenstopp
+    const res = await fetch(`${ROUTER}${pts}?overview=full&geometries=geojson${via ? '' : '&alternatives=3'}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
-    const r = json.routes?.[0];
-    if (!r) throw new Error('keine Route gefunden');
-    const coords = r.geometry.coordinates;
-    const cum = prepareRoute(coords);
-    state.route = { coords, cum, distance: r.distance, duration: r.duration };
-    state.routeInfo.clear();
-    for (const s of state.data.sites) state.routeInfo.set(s.id, projectOnRoute(s.lat, s.lon, coords, cum));
-    map.getSource('route').setData({ type: 'Feature', geometry: r.geometry, properties: {} });
-    const b = coords.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(coords[0], coords[0]));
+    if (my !== routeSeq) return;
+    if (!json.routes?.length) throw new Error('keine Route gefunden');
+    state.routes = json.routes.map((r) => {
+      const coords = r.geometry.coordinates;
+      const cum = prepareRoute(coords);
+      const info = new Map();
+      for (const s of state.data.sites) info.set(s.id, projectOnRoute(s.lat, s.lon, coords, cum));
+      return { geometry: r.geometry, coords, cum, distance: r.distance, duration: r.duration, info };
+    });
+    state.routeIdx = 0;
+    state.route = state.routes[0];
+    drawRoutes();
+    const first = state.routes[0].coords[0];
+    const b = new maplibregl.LngLatBounds(first, first);
+    for (const r of state.routes) for (const c of r.coords) b.extend(c);
     map.fitBounds(b, { padding: mapPadding(), duration: 600 });
     state.openId = null;
     compute();
   } catch (err) {
-    state.route = null;
-    state.routeInfo.clear();
-    map.getSource('route')?.setData(emptyFC());
+    if (my !== routeSeq) return;
+    clearRoutes();
     compute();
     $('summary').classList.add('error');
     $('summary').textContent = `Route konnte nicht berechnet werden (${err.message}).`;
@@ -317,7 +410,7 @@ function setupSearch(inputId, key) {
   input.addEventListener('input', () => {
     clearTimeout(timer);
     const q = input.value.trim();
-    if (state[key]) { state[key] = null; updateRoute(); }
+    if (state[key]) { state[key] = null; state.via = null; updateRoute(); }
     if (q.length < 3) return close();
     timer = setTimeout(async () => {
       const my = ++seq;
@@ -353,7 +446,7 @@ function useMyLocation() {
     state.userPos = { lat: pos.coords.latitude, lon: pos.coords.longitude };
     state.start = { ...state.userPos, label: 'Mein Standort' };
     $('start').value = 'Mein Standort';
-    if (!state.dest) map.flyTo({ center: [state.userPos.lon, state.userPos.lat], zoom: 8, padding: mapPadding() });
+    if (!state.dest) map.flyTo({ center: [state.userPos.lon, state.userPos.lat], zoom: 8, offset: sheetOffset() });
     updateRoute();
   }, () => {
     btn.classList.remove('busy');
@@ -454,7 +547,7 @@ async function init() {
       el('a', { href: 'https://supercharge.info', target: '_blank', rel: 'noopener' }, 'supercharge.info'),
       ', © ', el('a', { href: 'https://www.openstreetmap.org/copyright', target: '_blank', rel: 'noopener' }, 'OpenStreetMap'), '-Mitwirkende');
     renderChips();
-    compute();
+    if (state.start && state.dest) updateRoute(); else compute();
   } catch (err) {
     $('summary').classList.add('error');
     $('summary').textContent = `Daten konnten nicht geladen werden (${err.message}).`;
